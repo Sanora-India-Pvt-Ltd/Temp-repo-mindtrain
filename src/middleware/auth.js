@@ -57,6 +57,23 @@ const protect = async (req, res, next) => {
             req.userId = user._id; // Also set userId for convenience
             next();
         } catch (error) {
+            if (error.name === 'TokenExpiredError') {
+                return res.status(401).json({
+                    success: false,
+                    message: 'Token expired. Please log in again.',
+                    code: 'TOKEN_EXPIRED'
+                });
+            }
+            if (error.name === 'JsonWebTokenError') {
+                return res.status(401).json({
+                    success: false,
+                    message: 'Invalid token. Please log in again.',
+                    code: 'TOKEN_INVALID'
+                });
+            }
+            if (process.env.NODE_ENV === 'development') {
+                console.error('[auth] Token verification failed:', error.message);
+            }
             return res.status(401).json({
                 success: false,
                 message: 'Not authorized, token failed'

@@ -1,5 +1,6 @@
 require('dotenv').config();
 
+const mongoose = require('mongoose');
 const express = require('express');
 const cors = require('cors');
 
@@ -31,39 +32,24 @@ app.get('/health', (req, res) => {
   });
 });
 
-// 404 handler for unknown routes
-app.use((req, res, next) => {
-  if (req.path.startsWith('/api/mindtrain')) {
-    return res.status(404).json({
-      success: false,
-      message: 'Route not found in MindTrain service',
-      path: req.path,
-      method: req.method
-    });
-  }
-  next();
-});
-
-// MindTrain-specific error handler (for MindTrainError and subclasses)
-app.use(mindtrainErrorHandler);
-
-// Generic fallback error handler
-// eslint-disable-next-line no-unused-vars
-app.use((err, req, res, next) => {
-  console.error('Unhandled error in MindTrain service:', err);
-  res.status(500).json({
-    success: false,
-    message: 'Internal server error in MindTrain service'
-  });
-});
-
 // Use a dedicated MindTrain port so it can run alongside the main backend.
 // Prefer MINDTRAIN_PORT to avoid clashing with the monolith's PORT (typically 3100).
 const PORT = process.env.MINDTRAIN_PORT || 3200;
 
-// Start server after connecting to MindTrain DB
+// Start server after connecting to main DB (for User/auth) and MindTrain DB
 (async () => {
   try {
+    // Default mongoose connection: required for User model used by auth middleware
+    const mainUri = process.env.MONGODB_URI;
+    if (!mainUri) {
+      throw new Error('MONGODB_URI is required in .env for auth (User model)');
+    }
+    await mongoose.connect(mainUri, {
+      serverSelectionTimeoutMS: 10000,
+      socketTimeoutMS: 45000,
+    });
+    console.log('✅ Main MongoDB connected (auth/User)');
+
     await connectMindTrainDB();
 
     // MindTrain routes (same external paths as monolith)
@@ -103,6 +89,32 @@ const PORT = process.env.MINDTRAIN_PORT || 3200;
       console.error('❌ Failed to load MindTrain unified user routes:', error);
     }
 
+    // 404 handler for unknown MindTrain routes (must be AFTER routes)
+    app.use((req, res, next) => {
+      if (req.path.startsWith('/api/mindtrain')) {
+        return res.status(404).json({
+          success: false,
+          message: 'Route not found in MindTrain service',
+          path: req.path,
+          method: req.method
+        });
+      }
+      next();
+    });
+
+    // MindTrain-specific error handler (for MindTrainError and subclasses)
+    app.use(mindtrainErrorHandler);
+
+    // Generic fallback error handler
+    // eslint-disable-next-line no-unused-vars
+    app.use((err, req, res, next) => {
+      console.error('Unhandled error in MindTrain service:', err);
+      res.status(500).json({
+        success: false,
+        message: 'Internal server error in MindTrain service'
+      });
+    });
+
     const server = app.listen(PORT, () => {
       console.log(`\n🎯 MindTrain service running on port ${PORT}`);
       console.log(`🌐 Environment: ${process.env.NODE_ENV || 'development'}`);
@@ -114,6 +126,10 @@ const PORT = process.env.MINDTRAIN_PORT || 3200;
       console.log(`\n🛑 ${signal} received, shutting down MindTrain service...`);
       server.close(async () => {
         await closeMindTrainDB();
+        if (mongoose.connection.readyState === 1) {
+          await mongoose.disconnect();
+          console.log('✅ Main MongoDB disconnected');
+        }
         process.exit(0);
       });
     };
